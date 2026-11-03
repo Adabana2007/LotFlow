@@ -1,0 +1,138 @@
+spring:
+  application:
+    name: lotflow-backend
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/lotflow}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:1234}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: 2
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:root}
+      password: ${REDIS_PASSWORD:1234}
+      timeout: 2s
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:root}
+    password: ${RABBITMQ_PASSWORD:1234}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        retry:
+          enabled: true
+          initial-interval: 1s
+          multiplier: 2
+          max-interval: 10s
+          max-retries: 3
+        default-requeue-rejected: false
+  ai:
+    chat:
+      memory:
+        repository:
+          jdbc:
+            # 建表由 init.sql/升级脚本负责，应用启动不执行 DDL。
+            initialize-schema: never
+    vectorstore:
+      type: ${AI_VECTORSTORE_TYPE:none}
+      milvus:
+        client:
+          host: ${MILVUS_HOST:localhost}
+          port: ${MILVUS_PORT:19530}
+        database-name: default
+        collection-name: listing_embeddings
+        embedding-dimension: 1024
+        index-type: IVF_FLAT
+        metric-type: COSINE
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: 8080
+  forward-headers-strategy: framework
+  tomcat:
+    max-http-form-post-size: 1MB
+    max-swallow-size: 1MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+lotflow:
+  jwt:
+    secret: ${JWT_SECRET:}
+    issuer: lotflow
+    access-token-ttl: 15m
+    refresh-token-ttl: 7d
+  outbox:
+    relay-enabled: ${OUTBOX_RELAY_ENABLED:true}
+  http:
+    rate-limit-enabled: ${RATE_LIMIT_ENABLED:true}
+    authentication-requests: ${RATE_LIMIT_AUTH_REQUESTS:10}
+    authentication-window: 1m
+    write-requests: ${RATE_LIMIT_WRITE_REQUESTS:60}
+    write-window: 1m
+    general-requests: ${RATE_LIMIT_GENERAL_REQUESTS:180}
+    general-window: 1m
+    redis-fail-open: ${RATE_LIMIT_REDIS_FAIL_OPEN:true}
+    max-request-bytes: ${MAX_REQUEST_BYTES:1048576}
+  wallet:
+    recharge-enabled: ${WALLET_RECHARGE_ENABLED:false}
+  realtime:
+    enabled: ${REALTIME_ENABLED:true}
+  admin:
+    phone: ${ADMIN_PHONE:}
+    password: ${ADMIN_PASSWORD:}
+    nickname: ${ADMIN_NICKNAME:LotFlow Admin}
+  ai:
+    deepseek-key: ${DEEPSEEK_API_KEY:}
+    dashscope-key: ${DASHSCOPE_API_KEY:}
+    deepseek-base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
+    deepseek-model: deepseek-flash
+    dashscope-base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    embedding-model: qwen3.7-text-embedding-flash
+    rerank-url: ${LOTFLOW_RERANK_URL:https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank}
+    rerank-model: qwen3-rerank
+    costs:
+      models:
+        deepseek-flash:
+          input-per-million: ${DEEPSEEK_INPUT_COST_PER_MILLION:0}
+          output-per-million: ${DEEPSEEK_OUTPUT_COST_PER_MILLION:0}
+    rag:
+      enabled: ${AI_RAG_ENABLED:true}
+      collection-name: ${AI_RAG_COLLECTION:policy_knowledge_v1}
+      top-k: ${AI_RAG_TOP_K:5}
+      similarity-threshold: ${AI_RAG_SIMILARITY_THRESHOLD:0.35}
+      chunk-size: 400
+      min-chunk-size-chars: 100
+      min-chunk-length-to-embed: 20
+      max-chunks-per-file: 20
+      index-lock-ttl: 10m
+      ready-ttl: 30d
+  media:
+    root: ${MEDIA_ROOT:../data/media}
+    public-base-url: ${MEDIA_PUBLIC_BASE_URL:/}
+    upload-ticket-ttl: 15m
+    read-ticket-ttl: 15m
+
+mybatis-plus:
+  global-config:
+    db-config:
+      logic-not-delete-value: "false"
+      logic-delete-value: "true"

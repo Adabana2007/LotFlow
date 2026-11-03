@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.lotflow.mapper.AdminInsightMapper">
+
+    <select id="selectInventoryDiagnostics" resultType="com.lotflow.vo.InventoryDiagnosticVO">
+        select cast(o.id as varchar) as orderId,
+               o.order_no as orderNo,
+               cast(o.listing_id as varchar) as listingId,
+               l.title as listingTitle,
+               o.source_type as sourceType,
+               o.status as orderStatus,
+               o.reservation_status as reservationStatus,
+               case when o.status = 'SECOND_CHANCE' then o.payment_deadline
+                    else o.reservation_expires_at end as deadline,
+               greatest(0, extract(epoch from statement_timestamp()
+                   - case when o.status = 'SECOND_CHANCE' then o.payment_deadline
+                          else o.reservation_expires_at end))::bigint as overdueSeconds
+        from order_record o
+        join listing l on l.id = o.listing_id
+        where o.is_deleted = false
+          and l.is_deleted = false
+          and (
+              (o.source_type = 'SECKILL' and o.status = 'PENDING_PAYMENT'
+                  and o.reservation_status = 'RESERVED'
+                  and o.reservation_expires_at &lt;= statement_timestamp())
+              or (o.status = 'SECOND_CHANCE' and o.payment_deadline &lt;= statement_timestamp())
+          )
+        order by deadline, o.id
+        limit #{limit}
+    </select>
+
+    <select id="selectReportSummary" resultType="com.lotflow.vo.AdminReportSummaryVO">
+        select coalesce((
+                   select to_char(sum(o.amount), 'FM999999999999999990.00')
+                   from order_record o
+                   where o.status = 'COMPLETED' and o.is_deleted = false
+               ), '0.00') as completedGmv,
+               coalesce((
+                   select to_char(sum(w.available_balance), 'FM999999999999999990.00')
+                   from wallet_account w
+                   where w.account_code = 'PLATFORM_ESCROW' and w.is_deleted = false
+               ), '0.00') as escrowBalance,
+               (select count(*) from order_record where is_deleted = false) as totalOrders,
+               (select count(*) from order_record
+                where status in ('PENDING_PAYMENT', 'SECOND_CHANCE') and is_deleted = false)
+                   as pendingPaymentOrders,
+               (select count(*) from order_record
+                where status = 'DISPUTED' and is_deleted = false) as disputedOrders,
+               (select count(*) from sale_channel
+                where channel = 'AUCTION' and status = 'ACTIVE' and is_deleted = false)
+                   as activeAuctions,
+               (select count(*) from sale_channel
+                where channel = 'SECKILL' and status = 'ACTIVE' and is_deleted = false)
+                   as activeSeckills,
+               (select count(*) from sale_channel
+                where channel = 'SHOP' and status = 'ACTIVE' and is_deleted = false)
+                   as activeShops,
+               (select count(*) from sale_channel
+                where channel = 'AUCTION' and status = 'UNSOLD' and is_deleted = false)
+                   as unsoldAuctions,
+               coalesce(round(100.0 * (
+                   select count(*) from sale_channel auction_channel
+                   where auction_channel.channel = 'AUCTION'
+                     and auction_channel.status = 'UNSOLD'
+                     and auction_channel.is_deleted = false
+                     and exists (
+                         select 1 from sale_channel next_channel
+                         where next_channel.listing_id = auction_channel.listing_id
+                           and next_channel.id &gt; auction_channel.id
+                           and next_channel.channel in ('SECKILL', 'SHOP')
+                           and next_channel.is_deleted = false)
+               ) / nullif((
+                   select count(*) from sale_channel ended_channel
+                   where ended_channel.channel = 'AUCTION'
+                     and ended_channel.status in ('SOLD', 'UNSOLD')
+                     and ended_channel.is_deleted = false
+               ), 0), 2), 0)::text as downgradeRate
+    </select>
+
+    <select id="selectChannelInventory" resultType="com.lotflow.vo.ChannelInventoryVO">
+        select channels.channel,
+               count(sc.id) filter (where sc.status = 'ACTIVE') as activeCount,
+               count(sc.id) filter (where sc.status = 'SOLD') as soldCount,
+               count(sc.id) filter (where sc.status = 'UNSOLD') as unsoldCount,
+               count(sc.id) filter (where sc.status = 'SCHEDULED') as scheduledCount
+        from (values ('AUCTION'), ('SECKILL'), ('SHOP')) as channels(channel)
+        left join sale_channel sc
+               on sc.channel = channels.channel and sc.is_deleted = false
+        group by channels.channel
+        order by case channels.channel when 'AUCTION' then 1 when 'SECKILL' then 2 else 3 end
+    </select>
+
+    <select id="selectTradeTrend" resultType="com.lotflow.vo.DailyTradeVO">
+        with days as (
+            select generate_series(
+                       current_date - ((#{days} - 1) * interval '1 day'),
+                       current_date,
+                       interval '1 day')::date as day
+        )
+        select days.day,
+               count(o.id) as completedOrders,
+               coalesce(to_char(sum(o.amount), 'FM999999999999999990.00'), '0.00')
+                   as completedAmount
+        from days
+        left join order_record o
+               on o.status = 'COMPLETED'
+              and o.is_deleted = false
+              and o.gmt_modified::date = days.day
+        group by days.day
+        order by days.day
+    </select>
+
+    <select id="selectWalletReconciliation" resultType="com.lotflow.vo.WalletReconciliationVO">
+        select cast(w.id as varchar) as accountId,
+               w.account_code as accountCode,
+               w.owner_type as ownerType,
+               cast(w.owner_id as varchar) as ownerId,
+               to_char(w.available_balance, 'FM999999999999999990.00') as availableBalance,
+               to_char(w.frozen_balance, 'FM999999999999999990.00') as frozenBalance,
+               to_char(coalesce(last_transaction.available_after, w.available_balance),
+                       'FM999999999999999990.00') as ledgerAvailableBalance,
+               to_char(coalesce(last_transaction.frozen_after, w.frozen_balance),
+                       'FM999999999999999990.00') as ledgerFrozenBalance,
+               to_char((w.available_balance
+                       - coalesce(last_transaction.available_after, w.available_balance))
+                       + (w.frozen_balance
+                       - coalesce(last_transaction.frozen_after, w.frozen_balance)),
+                       'FM999999999999999990.00') as difference,
+               (w.available_balance = coalesce(last_transaction.available_after, w.available_balance)
+                and w.frozen_balance = coalesce(last_transaction.frozen_after, w.frozen_balance))
+                   as consistent
+        from wallet_account w
+        left join lateral (
+            select wt.available_after, wt.frozen_after
+            from wallet_transaction wt
+            where wt.account_id = w.id
+            order by wt.id desc
+            limit 1
+        ) last_transaction on true
+        where w.is_deleted = false
+        order by consistent asc, w.id desc
+        limit #{limit}
+    </select>
+
+    <select id="selectAiUsageTotals" resultType="com.lotflow.vo.AiUsageTotalsVO">
+        select count(*) as totalCalls,
+               count(*) filter (where status = 'SUCCEEDED') as succeededCalls,
+               count(*) filter (where status = 'FAILED') as failedCalls,
+               coalesce(sum(prompt_tokens), 0) as promptTokens,
+               coalesce(sum(completion_tokens), 0) as completionTokens,
+               round(avg(latency_ms))::bigint as averageLatencyMs
+        from ai_task
+        where is_deleted = false
+          and gmt_create &gt;= statement_timestamp() - interval '30 days'
+    </select>
+
+    <select id="selectAiUsageByModel" resultType="com.lotflow.vo.AiUsageByModelVO">
+        select coalesce(model_name, 'UNKNOWN') as modelName,
+               count(*) as calls,
+               coalesce(sum(prompt_tokens), 0) as promptTokens,
+               coalesce(sum(completion_tokens), 0) as completionTokens,
+               round(avg(latency_ms))::bigint as averageLatencyMs,
+               cast(null as varchar) as estimatedCost
+        from ai_task
+        where is_deleted = false
+          and gmt_create &gt;= statement_timestamp() - interval '30 days'
+        group by model_name
+        order by count(*) desc, model_name
+    </select>
+</mapper>

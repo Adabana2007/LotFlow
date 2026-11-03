@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.lotflow.mapper.PersonalWorkspaceMapper">
+
+    <select id="selectOrders" resultType="com.lotflow.vo.OrderSummaryVO">
+        select o.id,
+               o.order_no as orderNo,
+               o.listing_id as listingId,
+               coalesce(l.title, concat('商品 #', o.listing_id)) as listingTitle,
+               o.buyer_id as buyerId,
+               o.seller_id as sellerId,
+               case when o.buyer_id = #{userId} then seller.display_name
+                    else buyer.display_name end as counterpartyName,
+               case when o.buyer_id = #{userId} then 'BUYER' else 'SELLER' end as role,
+               o.source_type as sourceType,
+               o.amount,
+               o.status,
+               o.offered_second_chance as offeredSecondChance,
+               o.payment_deadline as paymentDeadline,
+               o.ship_deadline as shipDeadline,
+               o.gmt_create as createdAt,
+               o.dispute_status as disputeStatus,
+               o.reservation_status as reservationStatus,
+               o.reservation_expires_at as reservationExpiresAt
+        from order_record o
+        join listing l on l.id = o.listing_id
+        join app_user buyer on buyer.id = o.buyer_id
+        join app_user seller on seller.id = o.seller_id
+        where o.is_deleted = false
+          and (o.buyer_id = #{userId} or o.seller_id = #{userId})
+        <if test="role == 'BUYER'">and o.buyer_id = #{userId}</if>
+        <if test="role == 'SELLER'">and o.seller_id = #{userId}</if>
+        <if test="status != null">and o.status = #{status}</if>
+        <if test="cursor != null">and o.id &lt; #{cursor}</if>
+        order by o.id desc
+        limit #{limit}
+    </select>
+
+    <select id="selectSellerListings" resultType="com.lotflow.entity.ListingDO">
+        select id, seller_id, title, description, category_code, condition_code, defects,
+               start_price, duration_hours, scheduled_start, is_auto_downgrade,
+               seckill_price, shop_price, chat_enabled, status, rejection_reason,
+               gmt_create, gmt_modified, is_deleted, version
+        from listing
+        where seller_id = #{sellerId} and is_deleted = false
+        <if test="status != null">and status = #{status}</if>
+        <if test="cursor != null">and id &lt; #{cursor}</if>
+        order by id desc
+        limit #{limit}
+    </select>
+
+    <select id="selectBidHistory" resultType="com.lotflow.vo.BidHistoryVO">
+        select b.id,
+               b.auction_id as auctionId,
+               a.listing_id as listingId,
+               l.title as listingTitle,
+               b.amount,
+               b.deposit_required as depositRequired,
+               b.status as bidStatus,
+               a.status as auctionStatus,
+               a.current_price as currentPrice,
+               a.highest_bidder_id as highestBidderId,
+               a.end_time as endsAt,
+               b.gmt_create as createdAt
+        from bid b
+        join auction a on a.id = b.auction_id
+        join listing l on l.id = a.listing_id
+        where b.bidder_id = #{bidderId}
+          and b.is_deleted = false
+          and a.is_deleted = false
+        <if test="cursor != null">and b.id &lt; #{cursor}</if>
+        order by b.id desc
+        limit #{limit}
+    </select>
+
+    <select id="selectTodos" resultType="com.lotflow.vo.TodoItemVO">
+        select 'ORDER_PAYMENT' as type,
+               o.id as resourceId,
+               coalesce(l.title, concat('商品 #', o.listing_id)) as title,
+               '订单正在等待你完成钱包付款' as description,
+               concat('/orders/', o.id) as route,
+               o.payment_deadline as dueAt
+        from order_record o
+        join listing l on l.id = o.listing_id
+        where o.buyer_id = #{userId}
+          and o.status in ('PENDING_PAYMENT', 'SECOND_CHANCE')
+          and o.is_deleted = false
+
+        union all
+
+        select 'SELLER_DECISION' as type,
+               l.id as resourceId,
+               l.title,
+               '流拍后等待你决定重新拍卖、进入秒杀或退回库存' as description,
+               concat('/workspace/listings/', l.id, '/unsold') as route,
+               sc.decision_expires_at as dueAt
+        from listing l
+        join sale_channel sc on sc.listing_id = l.id
+        where l.seller_id = #{userId}
+          and l.status = 'WAITING_SELLER_DECISION'
+          and sc.decision_status = 'WAITING'
+          and l.is_deleted = false
+
+        union all
+
+        select 'SELLER_SHIPMENT' as type,
+               o.id as resourceId,
+               coalesce(l.title, concat('商品 #', o.listing_id)) as title,
+               '买家已付款，请在截止时间前填写发货信息' as description,
+               concat('/orders/', o.id) as route,
+               o.ship_deadline as dueAt
+        from order_record o
+        join listing l on l.id = o.listing_id
+        where o.seller_id = #{userId}
+          and o.status = 'PAID'
+          and o.is_deleted = false
+
+        union all
+
+        select 'LISTING_CHANGES' as type,
+               l.id as resourceId,
+               l.title,
+               '审核要求补充或修改商品信息' as description,
+               concat('/workspace/listings/', l.id) as route,
+               l.gmt_modified as dueAt
+        from listing l
+        where l.seller_id = #{userId}
+          and l.status = 'CHANGES_REQUIRED'
+          and l.is_deleted = false
+
+        order by dueAt asc nulls last
+        limit 80
+    </select>
+
+    <select id="selectConversations" resultType="com.lotflow.vo.ConversationSummaryVO">
+        select c.id,
+               c.listing_id as listingId,
+               l.title as listingTitle,
+               case when c.buyer_id = #{userId} then c.seller_id else c.buyer_id end as otherPartyId,
+               case when c.buyer_id = #{userId} then seller.display_name else buyer.display_name end as otherPartyName,
+               c.status,
+               c.last_sequence as lastSequence,
+               case when c.buyer_id = #{userId}
+                    then c.last_sequence - c.buyer_last_read_sequence
+                    else c.last_sequence - c.seller_last_read_sequence end as unreadCount,
+               coalesce(last_message.content, '还没有消息') as lastMessage,
+               last_message.gmt_create as lastMessageAt
+        from conversation c
+        join listing l on l.id = c.listing_id
+        join app_user buyer on buyer.id = c.buyer_id
+        join app_user seller on seller.id = c.seller_id
+        left join lateral (
+            select m.content, m.gmt_create
+            from message m
+            where m.conversation_id = c.id and m.is_deleted = false
+            order by m.sequence_no desc
+            limit 1
+        ) last_message on true
+        where (c.buyer_id = #{userId} or c.seller_id = #{userId})
+          and c.is_deleted = false
+        <if test="cursor != null">and c.id &lt; #{cursor}</if>
+        order by c.id desc
+        limit #{limit}
+    </select>
+
+    <sql id="disputeColumns">
+        select o.id,
+               o.id as orderId,
+               o.order_no as orderNo,
+               o.listing_id as listingId,
+               coalesce(l.title, concat('商品 #', o.listing_id)) as listingTitle,
+               o.buyer_id as buyerId,
+               buyer.display_name as buyerName,
+               o.seller_id as sellerId,
+               seller.display_name as sellerName,
+               o.amount,
+               o.deposit_applied as depositApplied,
+               o.escrow_amount as escrowAmount,
+               o.status as orderStatus,
+               o.dispute_status as disputeStatus,
+               o.dispute_reason as reason,
+               o.dispute_evidence as evidence,
+               o.dispute_resolution as resolution,
+               resolver.display_name as resolvedBy,
+               o.paid_at as paidAt,
+               o.shipped_at as shippedAt,
+               o.received_at as receivedAt,
+               o.dispute_opened_at as disputeOpenedAt,
+               o.gmt_create as createdAt,
+               o.dispute_resolved_at as resolvedAt
+        from order_record o
+        join listing l on l.id = o.listing_id
+        join app_user buyer on buyer.id = o.buyer_id
+        join app_user seller on seller.id = o.seller_id
+        left join app_user resolver on resolver.id = o.dispute_resolved_by
+    </sql>
+
+    <select id="selectDisputes" resultType="com.lotflow.vo.DisputeVO">
+        <include refid="disputeColumns"/>
+        where o.dispute_status is not null
+          and o.is_deleted = false
+          and (#{privileged} = true or o.buyer_id = #{userId} or o.seller_id = #{userId})
+        <if test="cursor != null">and o.id &lt; #{cursor}</if>
+        order by o.id desc
+        limit #{limit}
+    </select>
+
+    <select id="selectDispute" resultType="com.lotflow.vo.DisputeVO">
+        <include refid="disputeColumns"/>
+        where o.id = #{orderId}
+          and o.dispute_status is not null
+          and o.is_deleted = false
+          and (#{privileged} = true or o.buyer_id = #{userId} or o.seller_id = #{userId})
+    </select>
+</mapper>

@@ -1,0 +1,53 @@
+# Local environment and secrets
+.env
+.env.*
+*.env
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# Runtime data and local state
+data/
+backend/data/
+logs/
+*.log
+*.log.*
+*.pid
+*.hprof
+*.dump
+
+# IDE and machine-specific files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build output and dependencies
+backend/target/
+**/target/
+**/node_modules/
+**/dist/
+**/build/
+**/coverage/
+web/.eslintcache
+**/.eslintcache
+*.tsbuildinfo
+temp/
+temp/node_modules/
+temp/dist/
+
+# Local test artifacts
+playwright-report/
+test-results/
+**/chromeprofile/
+
+# Local assistant workspace data
+.workbuddy/
